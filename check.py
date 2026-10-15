@@ -15,20 +15,42 @@ STATE = Path(__file__).parent / "state.json"
 TOPIC = os.environ.get("NTFY_TOPIC", "")
 TIME_RE = re.compile(r"^\d{1,2}:\d{2}")
 
-# Sayfada başlığı bulur, içinde satır (tr) olan ilk üst elemana çıkar, hücreleri okur.
+# Başlığı bulur, yukarı çıkarak 3 hücreli ve hücreleri saat olan satırları arar.
+# tr/td de olsa, div tabanlı ızgara da olsa çalışır.
 JS = """
-(title) => {
+([title, other]) => {
   const norm = s => s.replace(/\\s+/g, ' ').trim().toLocaleUpperCase('tr');
+  const timeRe = /^\\d{1,2}:\\d{2}/;
+  const t = norm(title), o = norm(other);
   const all = [...document.querySelectorAll('body *')];
-  const head = all.find(e => e.children.length === 0 && norm(e.textContent) === norm(title));
-  if (!head) return null;
-  let node = head;
-  while (node && !node.querySelector('tr')) node = node.parentElement;
-  if (!node) return null;
-  return [...node.querySelectorAll('tr')].map(tr =>
-    [...tr.querySelectorAll('td')].map(td => td.textContent.replace(/\\s+/g, ' ').trim()));
+  const heads = all.filter(e => norm(e.textContent) === t);
+  if (!heads.length) return {rows: [], debug: 'baslik elemani bulunamadi'};
+  const head = heads[heads.length - 1];
+
+  const findRows = root => {
+    const out = [];
+    for (const el of root.querySelectorAll('*')) {
+      if (el.children.length !== 3) continue;
+      const cells = [...el.children].map(c => c.textContent.replace(/\\s+/g, ' ').trim());
+      const ok = cells.every(c => c === '' || timeRe.test(c));
+      if (ok && cells.some(c => c !== '')) out.push(cells);
+    }
+    return out;
+  };
+
+  let node = head.parentElement;
+  while (node) {
+    if (norm(node.textContent).includes(o)) break;
+    const rows = findRows(node);
+    if (rows.length) return {rows, debug: ''};
+    node = node.parentElement;
+  }
+  const ctx = head.parentElement && head.parentElement.parentElement
+    ? head.parentElement.parentElement.outerHTML : head.outerHTML;
+  return {rows: [], debug: ctx.slice(0, 3000)};
 }
 """
+OTHER_SECTION = "ÇİFTEÇINARLAR KALKIŞ"
 
 
 def scrape():
@@ -37,16 +59,23 @@ def scrape():
         page = browser.new_page()
         page.goto(URL, wait_until="networkidle", timeout=60000)
         page.wait_for_selector(f"text={SECTION}", timeout=30000)
-        page.wait_for_timeout(2000)
-        rows = page.evaluate(JS, SECTION)
+        page.wait_for_timeout(3000)
+        res = page.evaluate(JS, [SECTION, OTHER_SECTION])
+        body_text = page.inner_text("body")
         browser.close()
 
+    rows = res["rows"]
     if not rows:
+        print("--- DEBUG: HTML ---")
+        print(res["debug"])
+        print("--- DEBUG: SAYFA METNİ ---")
+        i = body_text.upper().find("BAYRAKTAR")
+        print(body_text[max(0, i - 200): i + 800])
         raise RuntimeError("Tablo bulunamadı, sayfa yapısı değişmiş olabilir.")
 
     result = {}
     for i, day in enumerate(DAYS):
-        result[day] = [r[i] for r in rows if len(r) > i and TIME_RE.match(r[i])]
+        result[day] = [r[i] for r in rows if TIME_RE.match(r[i])]
 
     if not any(result.values()):
         raise RuntimeError("Tablo bulundu ama hiç saat okunamadı.")
