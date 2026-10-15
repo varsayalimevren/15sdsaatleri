@@ -19,12 +19,13 @@ TIME_RE = re.compile(r"^\d{1,2}:\d{2}")
 # tr/td de olsa, div tabanlı ızgara da olsa çalışır.
 JS = """
 ([title, other]) => {
+  const R = x => JSON.stringify(x);
   const norm = s => s.replace(/\\s+/g, ' ').trim().toLocaleUpperCase('tr');
   const timeRe = /^\\d{1,2}:\\d{2}/;
   const t = norm(title), o = norm(other);
   const all = [...document.querySelectorAll('body *')];
   const heads = all.filter(e => norm(e.textContent) === t);
-  if (!heads.length) return {rows: [], debug: 'baslik elemani bulunamadi'};
+  if (!heads.length) return R({rows: [], debug: 'baslik elemani bulunamadi'});
   const head = heads[heads.length - 1];
 
   const findRows = root => {
@@ -42,12 +43,12 @@ JS = """
   while (node) {
     if (norm(node.textContent).includes(o)) break;
     const rows = findRows(node);
-    if (rows.length) return {rows, debug: ''};
+    if (rows.length) return R({rows, debug: ''});
     node = node.parentElement;
   }
   const ctx = head.parentElement && head.parentElement.parentElement
     ? head.parentElement.parentElement.outerHTML : head.outerHTML;
-  return {rows: [], debug: ctx.slice(0, 3000)};
+  return R({rows: [], debug: ctx.slice(0, 3000)});
 }
 """
 OTHER_SECTION = "ÇİFTEÇINARLAR KALKIŞ"
@@ -60,7 +61,8 @@ def scrape():
         page.goto(URL, wait_until="networkidle", timeout=60000)
         page.wait_for_selector(f"text={SECTION}", timeout=30000)
         page.wait_for_timeout(3000)
-        res = page.evaluate(JS, [SECTION, OTHER_SECTION])
+        expr = "(" + JS + ")(" + json.dumps([SECTION, OTHER_SECTION]) + ")"
+        res = json.loads(page.evaluate(expr))
         body_text = page.inner_text("body")
         browser.close()
 
