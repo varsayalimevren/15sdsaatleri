@@ -1,0 +1,37 @@
+name: 15SD izle
+
+on:
+  schedule:
+    # UTC saatidir; Türkiye saatiyle 07:00, 13:00, 19:00
+    - cron: "0 4,10,16 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Kurulum
+        run: |
+          pip install playwright
+          playwright install --with-deps chromium
+
+      - name: Kontrol et
+        run: python check.py
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+
+      - name: Yeni saatleri kaydet
+        run: |
+          git config user.name "izleme-botu"
+          git config user.email "bot@users.noreply.github.com"
+          git add state.json
+          git diff --cached --quiet || (git commit -m "saatler guncellendi" && git push)
