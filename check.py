@@ -15,40 +15,47 @@ STATE = Path(__file__).parent / "state.json"
 TOPIC = os.environ.get("NTFY_TOPIC", "")
 TIME_RE = re.compile(r"^\d{1,2}:\d{2}")
 
-# Başlığı bulur, yukarı çıkarak 3 hücreli ve hücreleri saat olan satırları arar.
-# tr/td de olsa, div tabanlı ızgara da olsa çalışır.
-JS = """
+# Yapıdan bağımsız okuma: saat gibi görünen hücreleri bulur, sayfadaki yatay konumuna
+# göre İş Günleri / Cumartesi / Pazar sütununa atar.
+JS = r"""
 ([title, other]) => {
   const R = x => JSON.stringify(x);
-  const norm = s => s.replace(/\\s+/g, ' ').trim().toLocaleUpperCase('tr');
-  const timeRe = /^\\d{1,2}:\\d{2}/;
+  const clean = s => s.replace(/\s+/g, ' ').trim();
+  const norm = s => clean(s).toLocaleUpperCase('tr');
   const t = norm(title), o = norm(other);
+  const cellRe = /^\d{1,2}:\d{2}(\s*\(-?\d\))?(\s*[A-Z])?$/;
+  const labels = ['İŞ GÜNLERİ', 'CUMARTESİ', 'PAZAR'];
+  const box = e => { const r = e.getBoundingClientRect(); return {x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width}; };
+
   const all = [...document.querySelectorAll('body *')];
   const heads = all.filter(e => norm(e.textContent) === t);
-  if (!heads.length) return R({rows: [], debug: 'baslik elemani bulunamadi'});
+  if (!heads.length) return R({error: 'baslik bulunamadi'});
   const head = heads[heads.length - 1];
-
-  const findRows = root => {
-    const out = [];
-    for (const el of root.querySelectorAll('*')) {
-      if (el.children.length !== 3) continue;
-      const cells = [...el.children].map(c => c.textContent.replace(/\\s+/g, ' ').trim());
-      const ok = cells.every(c => c === '' || timeRe.test(c));
-      if (ok && cells.some(c => c !== '')) out.push(cells);
-    }
-    return out;
-  };
 
   let node = head.parentElement;
   while (node) {
     if (norm(node.textContent).includes(o)) break;
-    const rows = findRows(node);
-    if (rows.length) return R({rows, debug: ''});
+    const els = [...node.querySelectorAll('*')];
+    const lab = labels.map(l => { const m = els.filter(e => norm(e.textContent) === l); return m.length ? m[m.length - 1] : null; });
+    const cells = els.filter(e => cellRe.test(clean(e.textContent)) &&
+      !(e.parentElement && cellRe.test(clean(e.parentElement.textContent))));
+    if (lab.every(Boolean) && cells.length) {
+      const xs = lab.map(l => box(l).x);
+      const days = [[], [], []];
+      cells.map(c => ({c, p: box(c)})).filter(i => i.p.w > 0)
+        .sort((a, b) => a.p.y - b.p.y || a.p.x - b.p.x)
+        .forEach(i => {
+          let k = 0, best = 1e9;
+          xs.forEach((x, n) => { const d = Math.abs(x - i.p.x); if (d < best) { best = d; k = n; } });
+          days[k].push(clean(i.c.textContent));
+        });
+      return R({days});
+    }
     node = node.parentElement;
   }
   const ctx = head.parentElement && head.parentElement.parentElement
     ? head.parentElement.parentElement.outerHTML : head.outerHTML;
-  return R({rows: [], debug: ctx.slice(0, 3000)});
+  return R({error: 'tablo bulunamadi', debug: ctx.slice(0, 3000)});
 }
 """
 OTHER_SECTION = "ÇİFTEÇINARLAR KALKIŞ"
@@ -56,8 +63,8 @@ OTHER_SECTION = "ÇİFTEÇINARLAR KALKIŞ"
 
 def scrape():
     with sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page()
+        browser = p.chromium.launch(args=["--window-size=1600,1200"])
+        page = browser.new_page(viewport={"width": 1600, "height": 1200})
         page.goto(URL, wait_until="networkidle", timeout=60000)
         page.wait_for_selector(f"text={SECTION}", timeout=30000)
         page.wait_for_timeout(3000)
@@ -66,18 +73,17 @@ def scrape():
         body_text = page.inner_text("body")
         browser.close()
 
-    rows = res["rows"]
-    if not rows:
+    if "error" in res:
         print("--- DEBUG: HTML ---")
-        print(res["debug"])
+        print(res.get("debug", ""))
         print("--- DEBUG: SAYFA METNİ ---")
         i = body_text.upper().find("BAYRAKTAR")
         print(body_text[max(0, i - 200): i + 800])
-        raise RuntimeError("Tablo bulunamadı, sayfa yapısı değişmiş olabilir.")
+        raise RuntimeError(f"Tablo okunamadı: {res['error']}")
 
-    result = {}
-    for i, day in enumerate(DAYS):
-        result[day] = [r[i] for r in rows if TIME_RE.match(r[i])]
+    result = dict(zip(DAYS, res["days"]))
+    for day, times in result.items():
+        print(f"{day} ({len(times)}): {', '.join(times)}")
 
     if not any(result.values()):
         raise RuntimeError("Tablo bulundu ama hiç saat okunamadı.")
